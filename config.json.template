@@ -1,0 +1,5 @@
+{
+    "db_path": "pkTracker.db", // 数据库名称
+    "super_admins": ["admin1", "admin2"], //超级管理员 
+    "daily_ranking_time": "09:10"  // 格式为 "HH:MM"，不设置则不发送每日排行榜
+}
