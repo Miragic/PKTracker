@@ -6,9 +6,3 @@ python-dateutil>=2.8.2
 
 # 日志处理
 loguru>=0.7.0
-
-# HTTP 客户端（用于微信接口调用）
-requests>=2.31.0
-
-# JSON 处理
-simplejson>=3.19.1
