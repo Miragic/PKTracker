@@ -32,7 +32,7 @@ class TaskScheduler:
         )
 
         # 从配置文件获取每日排行榜发送时间
-        daily_ranking_time = RobotConfig.conf().get("PKTracker_daily_ranking_time", None)
+        daily_ranking_time = RobotConfig.conf().get("daily_ranking_time", None)
         if daily_ranking_time:
             try:
                 hour, minute = map(int, daily_ranking_time.split(':'))
