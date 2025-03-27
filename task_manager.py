@@ -161,7 +161,7 @@ class TaskManager:
 
             freq_map = {'day': '每日', 'week': '每周', 'month': '每月'}
             freq_text = freq_map.get(frequency, frequency)
-            checkins_text = f"每{freq_text}最多打卡{max_checkins}次" if max_checkins > 0 else "不限制打卡次数"
+            checkins_text = f"{freq_text}最多打卡{max_checkins}次" if max_checkins > 0 else "不限制打卡次数"
 
             return f"""✅ 创建任务成功!
 任务名称: [{task_name}]
