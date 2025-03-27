@@ -32,8 +32,8 @@ class TaskScheduler:
         )
 
         # 从配置文件获取每日排行榜发送时间
-        daily_ranking_time = self.config.get("daily_ranking_time", None)  # 从配置文件获取时间
-        if daily_ranking_time:
+        daily_ranking_time = self.user_manager.config.get("daily_ranking_time")  # 从配置文件获取时间
+        if daily_ranking_time:  # 只有在设置了时间时才添加定时任务
             try:
                 hour, minute = map(int, daily_ranking_time.split(':'))
                 self.scheduler.add_job(
