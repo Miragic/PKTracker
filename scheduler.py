@@ -165,6 +165,7 @@ class TaskScheduler:
             gc.collect()
 
             logger.info(f"[PKTracker] 成功发送消息到群组 {group_id}")
+            return  # 添加 return 语句，发送成功后直接返回
 
         except Exception as e:
             logger.error(f"[PKTracker] 发送提醒消息异常: {str(e)}")
@@ -353,11 +354,8 @@ class TaskScheduler:
                 message += f"{medal} {idx}. {name}\n"
                 message += f"   打卡: {checkins}次 | 总积分: {points}\n"
 
-            # 发送消息
-            if self.channel:
-                context = Context(ContextType.TEXT, message, group_id)
-                reply = Reply(ReplyType.TEXT, message)
-                self.channel.send(reply, context)
+            # 使用统一的发送消息方法
+            self._send_reminder(group_id, message)
 
         except Exception as e:
             logger.exception(f"[PKTracker] 发送排行榜异常: {str(e)}")
