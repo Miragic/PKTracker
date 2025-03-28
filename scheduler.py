@@ -19,7 +19,15 @@ class TaskScheduler:
         self.db_path = db_path
         self.channel = None
         self.user_manager = user_manager
-        self.scheduler = BackgroundScheduler()
+        # 添加配置以防止任务重复执行
+        self.scheduler = BackgroundScheduler({
+            'apscheduler.executors.default': {
+                'class': 'apscheduler.executors.pool:ThreadPoolExecutor',
+                'max_workers': '1'
+            },
+            'apscheduler.job_defaults.coalesce': 'true',
+            'apscheduler.job_defaults.max_instances': '1'
+        })
         self._init_scheduler()
 
     def _init_scheduler(self):
