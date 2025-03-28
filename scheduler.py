@@ -101,6 +101,8 @@ class TaskScheduler:
             """, (current_time,))
 
             tasks = c.fetchall()
+            #打印tasks的size
+            logger.info(f"[PKTracker] 当前时间: {current_time}, 任务数量: {len(tasks)}")
 
             for task in tasks:
                 task_id, group_id, task_name, reminder_time, remind_text, checked_users = task
@@ -127,51 +129,38 @@ class TaskScheduler:
             if conn:
                 conn.close()
 
-    def _send_reminder(self, group_id: str, message: str, retry_cnt=0):
+    def _send_reminder(self, group_id: str, message: str):
         """发送提醒消息"""
-        max_retries = 2
-        current_retry = 0
+        try:
+            # 构建消息上下文
+            context = Context(ContextType.TEXT, message)
+            context["isgroup"] = True
+            context["group_id"] = group_id
+            context["receiver"] = group_id
 
-        while current_retry <= max_retries:
-            try:
-                # 构建消息上下文
-                context = Context(ContextType.TEXT, message)
-                context["isgroup"] = True
-                context["group_id"] = group_id
-                context["receiver"] = group_id
+            # 构建完整的消息对象
+            msg = ChatMessage(None)
+            msg.is_group = True
+            msg.other_user_id = group_id
+            msg.to_user_id = group_id
+            msg.actual_user_id = group_id
+            context["msg"] = msg
 
-                # 构建完整的消息对象
-                msg = ChatMessage(None)
-                msg.is_group = True
-                msg.other_user_id = group_id
-                msg.to_user_id = group_id
-                msg.actual_user_id = group_id
-                context["msg"] = msg
+            # 构建回复消息
+            reply = Reply(ReplyType.TEXT, message)
 
-                # 构建回复消息
-                reply = Reply(ReplyType.TEXT, message)
+            # 获取当前 channel 类型并创建 channel
+            channel_name = RobotConfig.conf().get("channel_type", "wx")
+            channel = channel_factory.create_channel(channel_name)
 
-                # 获取当前 channel 类型并创建 channel
-                channel_name = RobotConfig.conf().get("channel_type", "wx")
-                channel = channel_factory.create_channel(channel_name)
+            # 发送消息
+            channel.send(reply, context)
 
-                # 发送消息
-                channel.send(reply, context)
-
-                # 释放资源
-                channel = None
-                gc.collect()
-
-                logger.info(f"[PKTracker] 成功发送消息到群组 {group_id}")
-                return True
-
-            except Exception as e:
-                logger.error(f"[PKTracker] 发送提醒消息异常 (尝试 {current_retry + 1}/{max_retries + 1}): {str(e)}")
-                if current_retry < max_retries:
-                    time.sleep(3 * (current_retry + 1))
-                    current_retry += 1
-                    continue
-                return False
+            logger.info(f"[PKTracker] 成功发送消息到群组 {group_id}")
+            return True
+        except Exception as e:
+            logger.error(f"[PKTracker] 发送提醒消息失败: {str(e)}")
+            return False
 
     def process_weekly_rewards(self):
         """处理每周奖励"""
