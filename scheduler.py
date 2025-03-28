@@ -18,69 +18,56 @@ class TaskScheduler:
     _instance = None
     _initialized = False
     _scheduler = None
+    _lock = threading.Lock()
 
     def __new__(cls, *args, **kwargs):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
+            return cls._instance
 
     def __init__(self, db_path, user_manager):
-        if not TaskScheduler._initialized:
-            self.db_path = db_path
-            self.channel = None
-            self.user_manager = user_manager
+        with self._lock:
+            if not TaskScheduler._initialized:
+                self.db_path = db_path
+                self.channel = None
+                self.user_manager = user_manager
 
-            if TaskScheduler._scheduler is None:
-                TaskScheduler._scheduler = BackgroundScheduler(
-                    timezone='Asia/Shanghai',
-                    job_defaults={
-                        'coalesce': True,
-                        'max_instances': 1,
-                        'misfire_grace_time': 60
-                    },
-                    executors={
-                        'default': {
-                            'type': 'threadpool',
-                            'max_workers': 1
+                if TaskScheduler._scheduler is None:
+                    TaskScheduler._scheduler = BackgroundScheduler(
+                        timezone='Asia/Shanghai',
+                        job_defaults={
+                            'coalesce': True,
+                            'max_instances': 1,
+                            'misfire_grace_time': 60
+                        },
+                        executors={
+                            'default': {
+                                'type': 'threadpool',
+                                'max_workers': 1
+                            }
                         }
-                    }
-                )
-                self._init_scheduler()
-            self.scheduler = TaskScheduler._scheduler
-            TaskScheduler._initialized = True
-
-    def start_scheduler(self):
-        """启动调度器"""
-        try:
-            if not self.scheduler.running and self.scheduler.state != 1:
-                self.scheduler.start()
-                logger.info("[PKTracker] 定时任务调度器已启动")
-        except Exception as e:
-            logger.error(f"[PKTracker] 启动调度器异常: {str(e)}")
-
-    def stop_scheduler(self):
-        """停止调度器"""
-        try:
-            if self.scheduler.running:
-                self.scheduler.shutdown(wait=False)
-                TaskScheduler._scheduler = None
-                TaskScheduler._initialized = False
-                logger.info("[PKTracker] 定时任务调度器已停止")
-        except Exception as e:
-            logger.error(f"[PKTracker] 停止调度器异常: {str(e)}")
+                    )
+                    # 确保调度器是干净的状态
+                    if TaskScheduler._scheduler.running:
+                        TaskScheduler._scheduler.shutdown(wait=False)
+                    TaskScheduler._scheduler.remove_all_jobs()
+                    self._init_scheduler()
+                self.scheduler = TaskScheduler._scheduler
+                TaskScheduler._initialized = True
 
     def _init_scheduler(self):
         """初始化定时任务"""
-        # 先移除所有已存在的任务
-        self.scheduler.remove_all_jobs()
-
-        # 添加新任务
-        self.scheduler.add_job(
-            self.check_reminders,
-            CronTrigger(minute='*'),
-            id='check_reminders',
-            replace_existing=True
-        )
+        with self._lock:
+            # 添加新任务，使用独特的任务ID
+            job_id = f'check_reminders_{id(self)}'
+            self.scheduler.add_job(
+                self.check_reminders,
+                CronTrigger(minute='*'),
+                id=job_id,
+                replace_existing=True,
+                max_instances=1
+            )
 
         # 从配置文件获取每日排行榜发送时间
         daily_ranking_time = self.user_manager.config.get("daily_ranking_time")  # 从配置文件获取时间

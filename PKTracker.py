@@ -27,45 +27,58 @@ from plugins.PKTracker.user_manager import UserManager
     author="Miragic",
 )
 class PKTracker(Plugin):
+    _instance = None
+    _scheduler_initialized = False
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
     def __init__(self):
-        super().__init__()
-        try:
-            self.config = super().load_config()
-            if not self.config:
-                self.config = self._load_config_template()
+        if not hasattr(self, '_initialized'):
+            super().__init__()
+            try:
+                self.config = super().load_config()
+                if not self.config:
+                    self.config = self._load_config_template()
 
-            # 初始化数据库
-            db_name = self.config.get("db_path", "pkTracker.db")  # 从配置文件获取数据库名称，默认为 pkTracker.db
-            self.db_path = os.path.join(os.path.dirname(__file__), db_name)
-            self.db_manager = DatabaseManager(self.db_path)
+                # 初始化数据库
+                db_name = self.config.get("db_path", "pkTracker.db")
+                self.db_path = os.path.join(os.path.dirname(__file__), db_name)
+                self.db_manager = DatabaseManager(self.db_path)
 
-            # 初始化客户端
-            self._init_client()
+                # 初始化客户端
+                self._init_client()
 
-            # 初始化各个管理器
-            self.task_manager = TaskManager(self.db_path)
-            self.checkin_manager = CheckinManager(self.db_path)
-            self.user_manager = UserManager(self.client, self.app_id)
-            self.admin_manager = AdminManager(self.db_path, self.config, self.user_manager)
-            self.ranking_manager = RankingManager(self.db_path, self.user_manager)
+                # 初始化各个管理器
+                self.task_manager = TaskManager(self.db_path)
+                self.checkin_manager = CheckinManager(self.db_path)
+                self.user_manager = UserManager(self.client, self.app_id)
+                self.admin_manager = AdminManager(self.db_path, self.config, self.user_manager)
+                self.ranking_manager = RankingManager(self.db_path, self.user_manager)
 
-            # 初始化并启动调度器
-            self.scheduler = TaskScheduler(self.db_path, self)
-            self.scheduler.start_scheduler()
+                # 只在第一次初始化时创建和启动调度器
+                if not PKTracker._scheduler_initialized:
+                    self.scheduler = TaskScheduler(self.db_path, self)
+                    self.scheduler.start_scheduler()
+                    PKTracker._scheduler_initialized = True
 
-            # 注册事件处理器
-            self.handlers[Event.ON_HANDLE_CONTEXT] = self.on_handle_context
+                # 注册事件处理器
+                self.handlers[Event.ON_HANDLE_CONTEXT] = self.on_handle_context
+                self._initialized = True
 
-            logger.info("[PKTracker] 初始化成功")
-        except Exception as e:
-            logger.error(f"[PKTracker] 初始化异常：{e}")
-            raise Exception(f"[PKTracker] init failed: {str(e)}")
+                logger.info("[PKTracker] 初始化成功")
+            except Exception as e:
+                logger.error(f"[PKTracker] 初始化异常：{e}")
+                raise Exception(f"[PKTracker] init failed: {str(e)}")
 
     def __del__(self):
         """析构函数，确保调度器正确关闭"""
         try:
-            if hasattr(self, 'scheduler'):
+            if PKTracker._scheduler_initialized and hasattr(self, 'scheduler'):
                 self.scheduler.stop_scheduler()
+                PKTracker._scheduler_initialized = False
                 logger.info("[PKTracker] 调度器已停止")
         except Exception as e:
             logger.error(f"[PKTracker] 停止调度器异常: {str(e)}")
