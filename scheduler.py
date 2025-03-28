@@ -19,24 +19,32 @@ class TaskScheduler:
         self.db_path = db_path
         self.channel = None
         self.user_manager = user_manager
-        # 添加配置以防止任务重复执行
-        self.scheduler = BackgroundScheduler({
-            'apscheduler.executors.default': {
-                'class': 'apscheduler.executors.pool:ThreadPoolExecutor',
-                'max_workers': '1'
+
+        # 修改调度器配置
+        self.scheduler = BackgroundScheduler(
+            timezone='Asia/Shanghai',
+            job_defaults={
+                'coalesce': True,  # 堆积的任务只跑一次
+                'max_instances': 1,  # 同一个任务同一时间只能有一个实例在跑
+                'misfire_grace_time': 60  # 任务错过后的容错时间（秒）
             },
-            'apscheduler.job_defaults.coalesce': 'true',
-            'apscheduler.job_defaults.max_instances': '1'
-        })
+            executors={
+                'default': {
+                    'type': 'threadpool',
+                    'max_workers': 1
+                }
+            }
+        )
         self._init_scheduler()
 
     def _init_scheduler(self):
         """初始化定时任务"""
-        # 每分钟检查提醒
+        # 每分钟检查提醒，添加 replace_existing=True 确保任务不会重复添加
         self.scheduler.add_job(
             self.check_reminders,
             CronTrigger(minute='*'),
-            id='check_reminders'
+            id='check_reminders',
+            replace_existing=True
         )
 
         # 从配置文件获取每日排行榜发送时间
@@ -47,7 +55,8 @@ class TaskScheduler:
                 self.scheduler.add_job(
                     self.send_daily_ranking,
                     CronTrigger(hour=hour, minute=minute),
-                    id='daily_ranking'
+                    id='daily_ranking',
+                    replace_existing=True
                 )
                 logger.info(f"[PKTracker] 每日排行榜定时任务已设置: {daily_ranking_time}")
             except Exception as e:
@@ -57,14 +66,16 @@ class TaskScheduler:
         self.scheduler.add_job(
             self.process_weekly_rewards,
             CronTrigger(day_of_week='sun', hour=23),
-            id='weekly_rewards'
+            id='weekly_rewards',
+            replace_existing=True
         )
 
         # 每月最后一天23:00处理月奖励
         self.scheduler.add_job(
             self.process_monthly_rewards,
             CronTrigger(day='last', hour=23),
-            id='monthly_rewards'
+            id='monthly_rewards',
+            replace_existing=True
         )
 
     def start_scheduler(self):
@@ -109,7 +120,7 @@ class TaskScheduler:
             """, (current_time,))
 
             tasks = c.fetchall()
-            #打印tasks的size
+            # 打印tasks的size
             logger.info(f"[PKTracker] 当前时间: {current_time}, 任务数量: {len(tasks)}")
 
             for task in tasks:
