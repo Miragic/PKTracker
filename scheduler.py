@@ -15,31 +15,44 @@ from common.log import logger
 
 
 class TaskScheduler:
-    def __init__(self, db_path, user_manager):
-        self.db_path = db_path
-        self.channel = None
-        self.user_manager = user_manager
+    _instance = None
+    _initialized = False
 
-        # 修改调度器配置
-        self.scheduler = BackgroundScheduler(
-            timezone='Asia/Shanghai',
-            job_defaults={
-                'coalesce': True,  # 堆积的任务只跑一次
-                'max_instances': 1,  # 同一个任务同一时间只能有一个实例在跑
-                'misfire_grace_time': 60  # 任务错过后的容错时间（秒）
-            },
-            executors={
-                'default': {
-                    'type': 'threadpool',
-                    'max_workers': 1
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __init__(self, db_path, user_manager):
+        if not TaskScheduler._initialized:
+            self.db_path = db_path
+            self.channel = None
+            self.user_manager = user_manager
+
+            # 修改调度器配置
+            self.scheduler = BackgroundScheduler(
+                timezone='Asia/Shanghai',
+                job_defaults={
+                    'coalesce': True,
+                    'max_instances': 1,
+                    'misfire_grace_time': 60
+                },
+                executors={
+                    'default': {
+                        'type': 'threadpool',
+                        'max_workers': 1
+                    }
                 }
-            }
-        )
-        self._init_scheduler()
+            )
+            self._init_scheduler()
+            TaskScheduler._initialized = True
 
     def _init_scheduler(self):
         """初始化定时任务"""
-        # 每分钟检查提醒，添加 replace_existing=True 确保任务不会重复添加
+        # 先移除所有已存在的任务
+        self.scheduler.remove_all_jobs()
+
+        # 添加新任务
         self.scheduler.add_job(
             self.check_reminders,
             CronTrigger(minute='*'),
@@ -55,8 +68,7 @@ class TaskScheduler:
                 self.scheduler.add_job(
                     self.send_daily_ranking,
                     CronTrigger(hour=hour, minute=minute),
-                    id='daily_ranking',
-                    replace_existing=True
+                    id='daily_ranking'
                 )
                 logger.info(f"[PKTracker] 每日排行榜定时任务已设置: {daily_ranking_time}")
             except Exception as e:
@@ -66,16 +78,14 @@ class TaskScheduler:
         self.scheduler.add_job(
             self.process_weekly_rewards,
             CronTrigger(day_of_week='sun', hour=23),
-            id='weekly_rewards',
-            replace_existing=True
+            id='weekly_rewards'
         )
 
         # 每月最后一天23:00处理月奖励
         self.scheduler.add_job(
             self.process_monthly_rewards,
             CronTrigger(day='last', hour=23),
-            id='monthly_rewards',
-            replace_existing=True
+            id='monthly_rewards'
         )
 
     def start_scheduler(self):
