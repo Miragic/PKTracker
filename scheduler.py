@@ -1,5 +1,6 @@
 import gc
 import sqlite3
+import threading
 import time
 from datetime import datetime
 
@@ -19,6 +20,7 @@ class TaskScheduler:
     _initialized = False
     _scheduler = None
     _lock = threading.Lock()
+    _jobs_initialized = False  # 新增标志位
 
     def __new__(cls, *args, **kwargs):
         with cls._lock:
@@ -48,23 +50,26 @@ class TaskScheduler:
                             }
                         }
                     )
-                    # 确保调度器是干净的状态
-                    if TaskScheduler._scheduler.running:
-                        TaskScheduler._scheduler.shutdown(wait=False)
-                    TaskScheduler._scheduler.remove_all_jobs()
-                    self._init_scheduler()
+                    # 只在第一次初始化时添加任务
+                    if not TaskScheduler._jobs_initialized:
+                        self._init_scheduler()
+                        TaskScheduler._jobs_initialized = True
                 self.scheduler = TaskScheduler._scheduler
                 TaskScheduler._initialized = True
 
     def _init_scheduler(self):
         """初始化定时任务"""
         with self._lock:
-            # 添加新任务，使用独特的任务ID
-            job_id = f'check_reminders_{id(self)}'
+            # 确保调度器是干净的状态
+            if self.scheduler.running:
+                self.scheduler.shutdown(wait=False)
+            self.scheduler.remove_all_jobs()
+
+            # 添加新任务，使用固定的任务ID
             self.scheduler.add_job(
                 self.check_reminders,
                 CronTrigger(minute='*'),
-                id=job_id,
+                id='check_reminders',
                 replace_existing=True,
                 max_instances=1
             )
@@ -314,61 +319,99 @@ class TaskScheduler:
 
     def send_ranking_list(self, task_id):
         """发送任务排行榜"""
-        conn = sqlite3.connect(self.db_path)
-        c = conn.cursor()
-
+        conn = None
         try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+
             # 获取任务信息
-            c.execute("""SELECT group_id, task_name FROM t_task WHERE task_id=?""", (task_id,))
+            c.execute("""
+                SELECT group_id, task_name 
+                FROM t_task 
+                WHERE task_id = ?
+            """, (task_id,))
+
             task = c.fetchone()
             if not task:
+                logger.error(f"[PKTracker] 未找到任务ID: {task_id}")
                 return
 
             group_id, task_name = task
 
             # 获取排行榜数据
             c.execute("""
-                WITH user_points AS (
+                WITH checkin_stats AS (
+                    -- 计算基础打卡次数和对应的基础积分
                     SELECT 
                         cl.user_id,
                         COUNT(*) as checkin_count,
-                        COALESCE(SUM(b.amount), 0) as bonus_points
+                        SUM(COALESCE(
+                            (SELECT b.bonus_value 
+                             FROM t_bonus b 
+                             WHERE b.checkin_id = cl.checkin_id 
+                             AND b.bonus_type = 'base'), 0)
+                        ) as base_points,
+                        SUM(COALESCE(
+                            (SELECT b.bonus_value 
+                             FROM t_bonus b 
+                             WHERE b.checkin_id = cl.checkin_id 
+                             AND b.bonus_type = 'first'), 0)
+                        ) as first_points,
+                        SUM(COALESCE(
+                            (SELECT b.bonus_value 
+                             FROM t_bonus b 
+                             WHERE b.checkin_id = cl.checkin_id 
+                             AND b.bonus_type = 'consecutive'), 0)
+                        ) as consecutive_points,
+                        SUM(COALESCE(
+                            (SELECT b.bonus_value 
+                             FROM t_bonus b 
+                             WHERE b.checkin_id = cl.checkin_id 
+                             AND b.bonus_type IN ('week', 'month')), 0)
+                        ) as special_points
                     FROM t_checkin_log cl
-                    LEFT JOIN t_bonus b ON cl.task_id = b.task_id AND cl.user_id = b.user_id
                     WHERE cl.task_id = ?
                     GROUP BY cl.user_id
                 )
                 SELECT 
                     user_id,
                     checkin_count,
-                    checkin_count + bonus_points as total_points
-                FROM user_points
-                ORDER BY total_points DESC
+                    base_points,
+                    first_points,
+                    consecutive_points,
+                    special_points,
+                    (base_points + first_points + consecutive_points + special_points) as total_points
+                FROM checkin_stats
+                ORDER BY total_points DESC, checkin_count DESC
                 LIMIT 10
             """, (task_id,))
 
             rankings = c.fetchall()
 
-            # 批量获取所有用户的昵称
-            user_ids = [user_id for user_id, _, _ in rankings]
+            # 批量获取用户昵称
+            user_ids = [user_id for user_id, *_ in rankings]
             nicknames = self.user_manager._get_nickname_by_user_ids(user_ids)
 
             # 生成排行榜消息
             message = f"📊 [{task_name}] 排行榜 TOP 10\n"
-            message += "===================\n"
-            for idx, (user_id, checkins, points) in enumerate(rankings, 1):
+            message += "===================\n\n"
+            for idx, (user_id, checkins, base, first, consec, special, total) in enumerate(rankings, 1):
                 name = nicknames.get(user_id, "未知用户")
                 medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else "👑"
-                message += f"{medal} {idx}. {name}\n"
-                message += f"   打卡: {checkins}次 | 总积分: {points}\n"
 
-            # 使用统一的发送消息方法
+                message += f"{medal} {idx}. {name}\n"
+                message += f"   打卡: {checkins}次 | 总积分: {total}\n"
+                message += f"   (基础:{base} 首次:{first} 连续:{consec} 奖励:{special})\n"
+
+            # 发送消息
             self._send_reminder(group_id, message)
+            logger.info(f"[PKTracker] 已发送任务 [{task_name}] 的排行榜")
 
         except Exception as e:
-            logger.exception(f"[PKTracker] 发送排行榜异常: {str(e)}")
+            logger.error(f"[PKTracker] 发送排行榜异常: {str(e)}")
         finally:
-            conn.close()
+            if conn:
+                conn.close()
 
     def send_daily_ranking(self):
         """发送每日任务排行榜"""
