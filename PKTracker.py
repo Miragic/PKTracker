@@ -59,10 +59,8 @@ class PKTracker(Plugin):
                 self.ranking_manager = RankingManager(self.db_path, self.user_manager)
 
                 # 只在第一次初始化时创建和启动调度器
-                if not PKTracker._scheduler_initialized:
-                    self.scheduler = TaskScheduler(self.db_path, self)
-                    self.scheduler.start_scheduler()
-                    PKTracker._scheduler_initialized = True
+                self.scheduler = TaskScheduler(self.db_path, self)
+                self.scheduler.start_scheduler()
 
                 # 注册事件处理器
                 self.handlers[Event.ON_HANDLE_CONTEXT] = self.on_handle_context
@@ -586,3 +584,14 @@ class PKTracker(Plugin):
       - 管理员可以通过任务详情查看具体设置"""
 
         return base_help
+
+    def on_unload(self):
+        """插件卸载时的清理工作"""
+        try:
+            if PKTracker._scheduler_initialized and hasattr(self, 'scheduler'):
+                self.scheduler.stop_scheduler()
+                PKTracker._scheduler_initialized = False
+                PKTracker._instance = None
+                logger.info("[PKTracker] 插件卸载，调度器已停止")
+        except Exception as e:
+            logger.error(f"[PKTracker] 插件卸载异常: {str(e)}")

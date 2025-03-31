@@ -1,5 +1,6 @@
 import gc
 import sqlite3
+import threading
 import time
 from datetime import datetime
 
@@ -21,50 +22,65 @@ class TaskScheduler:
     _lock = threading.Lock()
 
     def __new__(cls, *args, **kwargs):
-        with cls._lock:
-            if cls._instance is None:
-                cls._instance = super().__new__(cls)
-            return cls._instance
+        if not hasattr(cls, '_instance') or cls._instance is None:
+            with cls._lock:
+                if not hasattr(cls, '_instance') or cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    # 在这里初始化基本属性
+                    cls._instance._initialized = False
+                    cls._instance._scheduler = None
+                    cls._instance._jobs_initialized = False
+        return cls._instance
 
     def __init__(self, db_path, user_manager):
         with self._lock:
-            if not TaskScheduler._initialized:
+            if not self._initialized:
                 self.db_path = db_path
                 self.channel = None
                 self.user_manager = user_manager
-
-                if TaskScheduler._scheduler is None:
-                    TaskScheduler._scheduler = BackgroundScheduler(
-                        timezone='Asia/Shanghai',
-                        job_defaults={
-                            'coalesce': True,
-                            'max_instances': 1,
-                            'misfire_grace_time': 60
-                        },
-                        executors={
-                            'default': {
-                                'type': 'threadpool',
-                                'max_workers': 1
-                            }
+                self._scheduler = BackgroundScheduler(
+                    timezone='Asia/Shanghai',
+                    job_defaults={
+                        'coalesce': True,
+                        'max_instances': 1,
+                        'misfire_grace_time': 60
+                    },
+                    executors={
+                        'default': {
+                            'type': 'threadpool',
+                            'max_workers': 1
                         }
-                    )
-                    # 确保调度器是干净的状态
-                    if TaskScheduler._scheduler.running:
-                        TaskScheduler._scheduler.shutdown(wait=False)
-                    TaskScheduler._scheduler.remove_all_jobs()
-                    self._init_scheduler()
-                self.scheduler = TaskScheduler._scheduler
-                TaskScheduler._initialized = True
+                    }
+                )
+                self._init_scheduler()
+                self._initialized = True
+
+    def start_scheduler(self):
+        """启动调度器"""
+        if not self._scheduler.running:
+            self._scheduler.start()
+            logger.info("[PKTracker] 调度器已启动")
+
+    def stop_scheduler(self):
+        """停止调度器"""
+        if self._scheduler and self._scheduler.running:
+            self._scheduler.shutdown(wait=False)
+            self._initialized = False
+            logger.info("[PKTracker] 调度器已停止")
 
     def _init_scheduler(self):
         """初始化定时任务"""
         with self._lock:
-            # 添加新任务，使用独特的任务ID
-            job_id = f'check_reminders_{id(self)}'
+            # 确保调度器是干净的状态
+            if self.scheduler.running:
+                self.scheduler.shutdown(wait=False)
+            self.scheduler.remove_all_jobs()
+
+            # 添加新任务，使用固定的任务ID
             self.scheduler.add_job(
                 self.check_reminders,
                 CronTrigger(minute='*'),
-                id=job_id,
+                id='check_reminders',
                 replace_existing=True,
                 max_instances=1
             )
@@ -200,32 +216,39 @@ class TaskScheduler:
 
             tasks = c.fetchall()
             for task_id, group_id, task_name, bonus in tasks:
-                # 获取本周打卡次数最多的用户
+                # 获取本周打卡记录及次数最多的用户
                 c.execute("""
-                    SELECT 
-                        user_id,
-                        COUNT(*) as checkin_count
-                    FROM t_checkin_log
-                    WHERE task_id = ? 
-                        AND checkin_time >= date('now', 'weekday 0', '-7 days')
-                        AND checkin_time < date('now', 'weekday 0')
-                    GROUP BY user_id
-                    ORDER BY checkin_count DESC
-                    LIMIT 1
+                    WITH weekly_checkins AS (
+                        SELECT 
+                            cl.checkin_id,
+                            cl.user_id,
+                            COUNT(*) as checkin_count
+                        FROM t_checkin_log cl
+                        WHERE cl.task_id = ? 
+                            AND cl.checkin_time >= date('now', 'weekday 0', '-7 days')
+                            AND cl.checkin_time < date('now', 'weekday 0')
+                        GROUP BY cl.user_id
+                        ORDER BY checkin_count DESC
+                        LIMIT 1
+                    )
+                    SELECT checkin_id, user_id, checkin_count
+                    FROM weekly_checkins
                 """, (task_id,))
 
                 winner = c.fetchone()
                 if winner:
-                    user_id, checkin_count = winner
-                    # 批量获取用户昵称
+                    checkin_id, user_id, checkin_count = winner
+                    # 获取用户昵称
                     nicknames = self.user_manager._get_nickname_by_user_ids([user_id])
                     user_name = nicknames.get(user_id, "未知用户")
 
-                    # 记录奖励
+                    # 记录周奖励
                     c.execute("""
-                        INSERT INTO t_bonus (task_id, user_id, type, amount, date_awarded)
-                        VALUES (?, ?, 'week', ?, date('now'))
-                    """, (task_id, user_id, bonus))
+                        INSERT INTO t_bonus (
+                            task_id, user_id, checkin_id, bonus_type, 
+                            bonus_value, create_time
+                        ) VALUES (?, ?, ?, 'week', ?, CURRENT_TIMESTAMP)
+                    """, (task_id, user_id, checkin_id, bonus))
 
                     # 发送获奖通知
                     message = f"🎉 周冠军公告 [{task_name}]\n"
@@ -265,32 +288,39 @@ class TaskScheduler:
 
             tasks = c.fetchall()
             for task_id, group_id, task_name, bonus in tasks:
-                # 获取上月打卡次数最多的用户
+                # 获取上月打卡记录及次数最多的用户
                 c.execute("""
-                    SELECT 
-                        user_id,
-                        COUNT(*) as checkin_count
-                    FROM t_checkin_log
-                    WHERE task_id = ? 
-                        AND checkin_time >= date('now', 'start of month', '-1 month')
-                        AND checkin_time < date('now', 'start of month')
-                    GROUP BY user_id
-                    ORDER BY checkin_count DESC
-                    LIMIT 1
+                    WITH monthly_checkins AS (
+                        SELECT 
+                            cl.checkin_id,
+                            cl.user_id,
+                            COUNT(*) as checkin_count
+                        FROM t_checkin_log cl
+                        WHERE cl.task_id = ? 
+                            AND cl.checkin_time >= date('now', 'start of month', '-1 month')
+                            AND cl.checkin_time < date('now', 'start of month')
+                        GROUP BY cl.user_id
+                        ORDER BY checkin_count DESC
+                        LIMIT 1
+                    )
+                    SELECT checkin_id, user_id, checkin_count
+                    FROM monthly_checkins
                 """, (task_id,))
 
                 winner = c.fetchone()
                 if winner:
-                    user_id, checkin_count = winner
-                    # 批量获取用户昵称
+                    checkin_id, user_id, checkin_count = winner
+                    # 获取用户昵称
                     nicknames = self.user_manager._get_nickname_by_user_ids([user_id])
                     user_name = nicknames.get(user_id, "未知用户")
 
-                    # 记录奖励
+                    # 记录月奖励
                     c.execute("""
-                        INSERT INTO t_bonus (task_id, user_id, type, amount, date_awarded)
-                        VALUES (?, ?, 'month', ?, date('now'))
-                    """, (task_id, user_id, bonus))
+                        INSERT INTO t_bonus (
+                            task_id, user_id, checkin_id, bonus_type, 
+                            bonus_value, create_time
+                        ) VALUES (?, ?, ?, 'month', ?, CURRENT_TIMESTAMP)
+                    """, (task_id, user_id, checkin_id, bonus))
 
                     # 发送获奖通知
                     message = f"🎉 月度冠军公告 [{task_name}]\n"
@@ -314,61 +344,99 @@ class TaskScheduler:
 
     def send_ranking_list(self, task_id):
         """发送任务排行榜"""
-        conn = sqlite3.connect(self.db_path)
-        c = conn.cursor()
-
+        conn = None
         try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+
             # 获取任务信息
-            c.execute("""SELECT group_id, task_name FROM t_task WHERE task_id=?""", (task_id,))
+            c.execute("""
+                SELECT group_id, task_name 
+                FROM t_task 
+                WHERE task_id = ?
+            """, (task_id,))
+
             task = c.fetchone()
             if not task:
+                logger.error(f"[PKTracker] 未找到任务ID: {task_id}")
                 return
 
             group_id, task_name = task
 
             # 获取排行榜数据
             c.execute("""
-                WITH user_points AS (
+                WITH checkin_stats AS (
+                    -- 计算基础打卡次数和对应的基础积分
                     SELECT 
                         cl.user_id,
                         COUNT(*) as checkin_count,
-                        COALESCE(SUM(b.amount), 0) as bonus_points
+                        SUM(COALESCE(
+                            (SELECT b.bonus_value 
+                             FROM t_bonus b 
+                             WHERE b.checkin_id = cl.checkin_id 
+                             AND b.bonus_type = 'base'), 0)
+                        ) as base_points,
+                        SUM(COALESCE(
+                            (SELECT b.bonus_value 
+                             FROM t_bonus b 
+                             WHERE b.checkin_id = cl.checkin_id 
+                             AND b.bonus_type = 'first'), 0)
+                        ) as first_points,
+                        SUM(COALESCE(
+                            (SELECT b.bonus_value 
+                             FROM t_bonus b 
+                             WHERE b.checkin_id = cl.checkin_id 
+                             AND b.bonus_type = 'consecutive'), 0)
+                        ) as consecutive_points,
+                        SUM(COALESCE(
+                            (SELECT b.bonus_value 
+                             FROM t_bonus b 
+                             WHERE b.checkin_id = cl.checkin_id 
+                             AND b.bonus_type IN ('week', 'month')), 0)
+                        ) as special_points
                     FROM t_checkin_log cl
-                    LEFT JOIN t_bonus b ON cl.task_id = b.task_id AND cl.user_id = b.user_id
                     WHERE cl.task_id = ?
                     GROUP BY cl.user_id
                 )
                 SELECT 
                     user_id,
                     checkin_count,
-                    checkin_count + bonus_points as total_points
-                FROM user_points
-                ORDER BY total_points DESC
+                    base_points,
+                    first_points,
+                    consecutive_points,
+                    special_points,
+                    (base_points + first_points + consecutive_points + special_points) as total_points
+                FROM checkin_stats
+                ORDER BY total_points DESC, checkin_count DESC
                 LIMIT 10
             """, (task_id,))
 
             rankings = c.fetchall()
 
-            # 批量获取所有用户的昵称
-            user_ids = [user_id for user_id, _, _ in rankings]
+            # 批量获取用户昵称
+            user_ids = [user_id for user_id, *_ in rankings]
             nicknames = self.user_manager._get_nickname_by_user_ids(user_ids)
 
             # 生成排行榜消息
             message = f"📊 [{task_name}] 排行榜 TOP 10\n"
-            message += "===================\n"
-            for idx, (user_id, checkins, points) in enumerate(rankings, 1):
+            message += "===================\n\n"
+            for idx, (user_id, checkins, base, first, consec, special, total) in enumerate(rankings, 1):
                 name = nicknames.get(user_id, "未知用户")
                 medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else "👑"
-                message += f"{medal} {idx}. {name}\n"
-                message += f"   打卡: {checkins}次 | 总积分: {points}\n"
 
-            # 使用统一的发送消息方法
+                message += f"{medal} {idx}. {name}\n"
+                message += f"   打卡: {checkins}次 | 总积分: {total}\n"
+                message += f"   (基础:{base} 首次:{first} 连续:{consec} 奖励:{special})\n"
+
+            # 发送消息
             self._send_reminder(group_id, message)
+            logger.info(f"[PKTracker] 已发送任务 [{task_name}] 的排行榜")
 
         except Exception as e:
-            logger.exception(f"[PKTracker] 发送排行榜异常: {str(e)}")
+            logger.error(f"[PKTracker] 发送排行榜异常: {str(e)}")
         finally:
-            conn.close()
+            if conn:
+                conn.close()
 
     def send_daily_ranking(self):
         """发送每日任务排行榜"""
