@@ -20,23 +20,28 @@ class TaskScheduler:
     _initialized = False
     _scheduler = None
     _lock = threading.Lock()
-    _jobs_initialized = False  # 新增标志位
+    _jobs_initialized = False
 
     def __new__(cls, *args, **kwargs):
-        with cls._lock:
-            if cls._instance is None:
-                cls._instance = super().__new__(cls)
-            return cls._instance
+        if not hasattr(cls, '_instance') or cls._instance is None:
+            with cls._lock:
+                if not hasattr(cls, '_instance') or cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    # 在这里初始化基本属性
+                    cls._instance._initialized = False
+                    cls._instance._scheduler = None
+                    cls._instance._jobs_initialized = False
+        return cls._instance
 
     def __init__(self, db_path, user_manager):
         with self._lock:
-            if not TaskScheduler._initialized:
+            if not self._initialized:
                 self.db_path = db_path
                 self.channel = None
                 self.user_manager = user_manager
 
-                if TaskScheduler._scheduler is None:
-                    TaskScheduler._scheduler = BackgroundScheduler(
+                if self._scheduler is None:
+                    self._scheduler = BackgroundScheduler(
                         timezone='Asia/Shanghai',
                         job_defaults={
                             'coalesce': True,
@@ -50,12 +55,11 @@ class TaskScheduler:
                             }
                         }
                     )
-                    # 只在第一次初始化时添加任务
-                    if not TaskScheduler._jobs_initialized:
+                    if not self._jobs_initialized:
                         self._init_scheduler()
-                        TaskScheduler._jobs_initialized = True
-                self.scheduler = TaskScheduler._scheduler
-                TaskScheduler._initialized = True
+                        self._jobs_initialized = True
+                self.scheduler = self._scheduler
+                self._initialized = True
 
     def _init_scheduler(self):
         """初始化定时任务"""

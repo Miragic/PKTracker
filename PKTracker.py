@@ -586,3 +586,14 @@ class PKTracker(Plugin):
       - 管理员可以通过任务详情查看具体设置"""
 
         return base_help
+
+    def on_unload(self):
+        """插件卸载时的清理工作"""
+        try:
+            if PKTracker._scheduler_initialized and hasattr(self, 'scheduler'):
+                self.scheduler.stop_scheduler()
+                PKTracker._scheduler_initialized = False
+                PKTracker._instance = None
+                logger.info("[PKTracker] 插件卸载，调度器已停止")
+        except Exception as e:
+            logger.error(f"[PKTracker] 插件卸载异常: {str(e)}")
