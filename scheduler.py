@@ -20,7 +20,6 @@ class TaskScheduler:
     _initialized = False
     _scheduler = None
     _lock = threading.Lock()
-    _jobs_initialized = False
 
     def __new__(cls, *args, **kwargs):
         if not hasattr(cls, '_instance') or cls._instance is None:
@@ -39,27 +38,35 @@ class TaskScheduler:
                 self.db_path = db_path
                 self.channel = None
                 self.user_manager = user_manager
-
-                if self._scheduler is None:
-                    self._scheduler = BackgroundScheduler(
-                        timezone='Asia/Shanghai',
-                        job_defaults={
-                            'coalesce': True,
-                            'max_instances': 1,
-                            'misfire_grace_time': 60
-                        },
-                        executors={
-                            'default': {
-                                'type': 'threadpool',
-                                'max_workers': 1
-                            }
+                self._scheduler = BackgroundScheduler(
+                    timezone='Asia/Shanghai',
+                    job_defaults={
+                        'coalesce': True,
+                        'max_instances': 1,
+                        'misfire_grace_time': 60
+                    },
+                    executors={
+                        'default': {
+                            'type': 'threadpool',
+                            'max_workers': 1
                         }
-                    )
-                    if not self._jobs_initialized:
-                        self._init_scheduler()
-                        self._jobs_initialized = True
-                self.scheduler = self._scheduler
+                    }
+                )
+                self._init_scheduler()
                 self._initialized = True
+
+    def start_scheduler(self):
+        """启动调度器"""
+        if not self._scheduler.running:
+            self._scheduler.start()
+            logger.info("[PKTracker] 调度器已启动")
+
+    def stop_scheduler(self):
+        """停止调度器"""
+        if self._scheduler and self._scheduler.running:
+            self._scheduler.shutdown(wait=False)
+            self._initialized = False
+            logger.info("[PKTracker] 调度器已停止")
 
     def _init_scheduler(self):
         """初始化定时任务"""

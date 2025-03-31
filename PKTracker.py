@@ -59,10 +59,8 @@ class PKTracker(Plugin):
                 self.ranking_manager = RankingManager(self.db_path, self.user_manager)
 
                 # 只在第一次初始化时创建和启动调度器
-                if not PKTracker._scheduler_initialized:
-                    self.scheduler = TaskScheduler(self.db_path, self)
-                    self.scheduler.start_scheduler()
-                    PKTracker._scheduler_initialized = True
+                self.scheduler = TaskScheduler(self.db_path, self)
+                self.scheduler.start_scheduler()
 
                 # 注册事件处理器
                 self.handlers[Event.ON_HANDLE_CONTEXT] = self.on_handle_context
