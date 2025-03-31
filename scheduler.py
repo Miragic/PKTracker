@@ -205,32 +205,39 @@ class TaskScheduler:
 
             tasks = c.fetchall()
             for task_id, group_id, task_name, bonus in tasks:
-                # 获取本周打卡次数最多的用户
+                # 获取本周打卡记录及次数最多的用户
                 c.execute("""
-                    SELECT 
-                        user_id,
-                        COUNT(*) as checkin_count
-                    FROM t_checkin_log
-                    WHERE task_id = ? 
-                        AND checkin_time >= date('now', 'weekday 0', '-7 days')
-                        AND checkin_time < date('now', 'weekday 0')
-                    GROUP BY user_id
-                    ORDER BY checkin_count DESC
-                    LIMIT 1
+                    WITH weekly_checkins AS (
+                        SELECT 
+                            cl.checkin_id,
+                            cl.user_id,
+                            COUNT(*) as checkin_count
+                        FROM t_checkin_log cl
+                        WHERE cl.task_id = ? 
+                            AND cl.checkin_time >= date('now', 'weekday 0', '-7 days')
+                            AND cl.checkin_time < date('now', 'weekday 0')
+                        GROUP BY cl.user_id
+                        ORDER BY checkin_count DESC
+                        LIMIT 1
+                    )
+                    SELECT checkin_id, user_id, checkin_count
+                    FROM weekly_checkins
                 """, (task_id,))
 
                 winner = c.fetchone()
                 if winner:
-                    user_id, checkin_count = winner
-                    # 批量获取用户昵称
+                    checkin_id, user_id, checkin_count = winner
+                    # 获取用户昵称
                     nicknames = self.user_manager._get_nickname_by_user_ids([user_id])
                     user_name = nicknames.get(user_id, "未知用户")
 
-                    # 记录奖励
+                    # 记录周奖励
                     c.execute("""
-                        INSERT INTO t_bonus (task_id, user_id, type, amount, date_awarded)
-                        VALUES (?, ?, 'week', ?, date('now'))
-                    """, (task_id, user_id, bonus))
+                        INSERT INTO t_bonus (
+                            task_id, user_id, checkin_id, bonus_type, 
+                            bonus_value, create_time
+                        ) VALUES (?, ?, ?, 'week', ?, CURRENT_TIMESTAMP)
+                    """, (task_id, user_id, checkin_id, bonus))
 
                     # 发送获奖通知
                     message = f"🎉 周冠军公告 [{task_name}]\n"
@@ -270,32 +277,39 @@ class TaskScheduler:
 
             tasks = c.fetchall()
             for task_id, group_id, task_name, bonus in tasks:
-                # 获取上月打卡次数最多的用户
+                # 获取上月打卡记录及次数最多的用户
                 c.execute("""
-                    SELECT 
-                        user_id,
-                        COUNT(*) as checkin_count
-                    FROM t_checkin_log
-                    WHERE task_id = ? 
-                        AND checkin_time >= date('now', 'start of month', '-1 month')
-                        AND checkin_time < date('now', 'start of month')
-                    GROUP BY user_id
-                    ORDER BY checkin_count DESC
-                    LIMIT 1
+                    WITH monthly_checkins AS (
+                        SELECT 
+                            cl.checkin_id,
+                            cl.user_id,
+                            COUNT(*) as checkin_count
+                        FROM t_checkin_log cl
+                        WHERE cl.task_id = ? 
+                            AND cl.checkin_time >= date('now', 'start of month', '-1 month')
+                            AND cl.checkin_time < date('now', 'start of month')
+                        GROUP BY cl.user_id
+                        ORDER BY checkin_count DESC
+                        LIMIT 1
+                    )
+                    SELECT checkin_id, user_id, checkin_count
+                    FROM monthly_checkins
                 """, (task_id,))
 
                 winner = c.fetchone()
                 if winner:
-                    user_id, checkin_count = winner
-                    # 批量获取用户昵称
+                    checkin_id, user_id, checkin_count = winner
+                    # 获取用户昵称
                     nicknames = self.user_manager._get_nickname_by_user_ids([user_id])
                     user_name = nicknames.get(user_id, "未知用户")
 
-                    # 记录奖励
+                    # 记录月奖励
                     c.execute("""
-                        INSERT INTO t_bonus (task_id, user_id, type, amount, date_awarded)
-                        VALUES (?, ?, 'month', ?, date('now'))
-                    """, (task_id, user_id, bonus))
+                        INSERT INTO t_bonus (
+                            task_id, user_id, checkin_id, bonus_type, 
+                            bonus_value, create_time
+                        ) VALUES (?, ?, ?, 'month', ?, CURRENT_TIMESTAMP)
+                    """, (task_id, user_id, checkin_id, bonus))
 
                     # 发送获奖通知
                     message = f"🎉 月度冠军公告 [{task_name}]\n"
